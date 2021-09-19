@@ -3,13 +3,11 @@
 
 steps:
 - name: 'gcr.io/cloud-builders/dotnet'
-  args:
-  - 'QuantConnect.Lean.sln'
+  args: ['QuantConnect.Lean.sln']
 
 # Build the test projects
 - name: 'gcr.io/$PROJECT_ID/dotnet'
   args: ['QuantConnect.Lean.sln']
-  dir: 'lean'
 
 - name: 'gcr.io/$PROJECT_ID/dotnet'
   args: ['QuantConnect.Lean.Launcher.dll']
