@@ -2,14 +2,20 @@
 # Cloud builder for the dotnet builder.
 
 steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+  - 'build'
+  - '--tag=gcr.io/$PROJECT_ID/dotnet'
+  - '.'
+
 # Build the test projects
-- name: 'gcr.io/$PROJECT_ID/lean/dotnet'
+- name: 'gcr.io/$PROJECT_ID/dotnet'
   args: ['QuantConnect.Lean.sln']
   dir: 'lean'
 
-- name: 'gcr.io/$PROJECT_ID/lean/dotnet'
+- name: 'gcr.io/$PROJECT_ID/dotnet'
   args: ['QuantConnect.Lean.Launcher.dll']
   dir: 'Launcher/bin/debug'
 
 images:
-- 'gcr.io/$PROJECT_ID/lean/dotnet'
+- 'gcr.io/$PROJECT_ID/dotnet'
