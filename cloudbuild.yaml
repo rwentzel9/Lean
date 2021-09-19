@@ -9,13 +9,5 @@ steps:
     - |
         dotnet QuantConnect.Lean.sln
 
-# Build the test projects
-- name: 'gcr.io/$PROJECT_ID/dotnet'
-  args: ['QuantConnect.Lean.sln']
-
-- name: 'gcr.io/$PROJECT_ID/dotnet'
-  args: ['QuantConnect.Lean.Launcher.dll']
-  dir: 'Launcher/bin/debug'
-
 images:
 - 'gcr.io/$PROJECT_ID/dotnet'
