@@ -353,6 +353,31 @@ namespace QuantConnect.Algorithm
         }
 
         /// <summary>
+        /// Creates a Beta indicator for the given target symbol in relation with the reference used. 
+        /// The indicator will be automatically updated on the given resolution.
+        /// </summary>
+        /// <param name="target">The target symbol whose Beta value we want</param>
+        /// <param name="reference">The reference symbol to compare with the target symbol</param>
+        /// <param name="period">The period of the Beta indicator</param>
+        /// <param name="resolution">The resolution</param>
+        /// <returns>The Beta indicator for the given parameters</returns>
+        public Beta B(Symbol target, Symbol reference, int period, Resolution? resolution = null)
+        {
+            var name = CreateIndicatorName(QuantConnect.Symbol.None, "B", resolution);
+            var beta = new Beta(name, period, target, reference);
+            RegisterIndicator(target, beta, resolution);
+            RegisterIndicator(reference, beta, resolution);
+
+            if (EnableAutomaticIndicatorWarmUp)
+            {
+                WarmUpIndicator(target, beta, resolution);
+                WarmUpIndicator(reference, beta, resolution);
+            }
+
+            return beta;
+        }
+
+        /// <summary>
         /// Creates a new Balance Of Power indicator.
         /// The indicator will be automatically updated on the given resolution.
         /// </summary>
@@ -1585,6 +1610,28 @@ namespace QuantConnect.Algorithm
         }
 
         /// <summary>
+        /// Creates a new SuperTrend indicator.
+        /// </summary>
+        /// <param name="symbol">The symbol whose SuperTrend indicator we want.</param>
+        /// <param name="period">The smoothing period for average true range.</param>
+        /// <param name="multiplier">Multiplier to calculate basic upper and lower bands width.</param>
+        /// <param name="movingAverageType">Smoother type for average true range, defaults to Wilders.</param>
+        /// <param name="resolution">The resolution.</param>
+        public SuperTrend STR(Symbol symbol, int period, decimal multiplier, MovingAverageType movingAverageType = MovingAverageType.Wilders, Resolution? resolution = null)
+        {
+            var name = CreateIndicatorName(symbol, $"STR({period},{multiplier})", resolution);
+            var strend = new SuperTrend(name, period, multiplier, movingAverageType);
+            RegisterIndicator(symbol, strend, resolution);
+
+            if (EnableAutomaticIndicatorWarmUp)
+            {
+                WarmUpIndicator(symbol, strend, resolution);
+            }
+
+            return strend;
+        }
+
+        /// <summary>
         /// Creates a new RollingSharpeRatio indicator.
         /// </summary>
         /// <param name="symbol">The symbol whose RSR we want</param>
@@ -2452,7 +2499,7 @@ namespace QuantConnect.Algorithm
         {
             var periods = (indicator as IIndicatorWarmUpPeriodProvider)?.WarmUpPeriod;
 
-            if (periods.HasValue)
+            if (periods.HasValue && periods != 0)
             {
                 var resolution = timeSpan.ToHigherResolutionEquivalent(false);
                 var resolutionTicks = resolution.ToTimeSpan().Ticks;
@@ -2472,7 +2519,8 @@ namespace QuantConnect.Algorithm
             }
             else if (!_isEmitWarmupInsightWarningSent)
             {
-                Debug($"Warning: the 'WarmUpIndicator' feature only works with indicators which inherit from '{nameof(IIndicatorWarmUpPeriodProvider)}' and define a warm up period." +
+                Debug($"Warning: the 'WarmUpIndicator' feature only works with indicators which inherit from '{nameof(IIndicatorWarmUpPeriodProvider)}'" +
+                      $" and define a warm up period, setting property 'WarmUpPeriod' with a value > 0." +
                       $" The provided indicator of type '{indicator.GetType().Name}' will not be warmed up.");
                 _isEmitWarmupInsightWarningSent = true;
             }

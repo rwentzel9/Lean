@@ -178,7 +178,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                             {
                                 lock (fineCollection.Data)
                                 {
-                                    fineCollection.Data.Add(enumerator.Current);
+                                    fineCollection.Add(enumerator.Current);
                                 }
                             }
                         }
@@ -228,7 +228,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                             fine.Value = coarse.Value;
                         }
 
-                        universeData.Data.Add(fundamentals);
+                        universeData.Add(fundamentals);
                     }
 
                     // END -- HACK ATTACK -- END
@@ -516,7 +516,9 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     universeSettings.FillForward,
                     universeSettings.ExtendedMarketHours,
                     dataNormalizationMode: universeSettings.DataNormalizationMode,
-                    subscriptionDataTypes: universeSettings.SubscriptionDataTypes);
+                    subscriptionDataTypes: universeSettings.SubscriptionDataTypes,
+                    dataMappingMode: universeSettings.DataMappingMode,
+                    contractDepthOffset: (uint)Math.Abs(universeSettings.ContractDepthOffset));
 
                 security = _securityService.CreateSecurity(symbol, configs, universeSettings.Leverage, symbol.ID.SecurityType.IsOption(), underlying);
 

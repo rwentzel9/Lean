@@ -20,6 +20,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using QuantConnect.Configuration;
 using QuantConnect.Data;
+using QuantConnect.Data.Auxiliary;
 using QuantConnect.Data.Custom;
 using QuantConnect.Data.Custom.Tiingo;
 using QuantConnect.Data.Market;
@@ -50,6 +51,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         private IDataQueueHandler _dataQueueHandler;
         private BaseDataExchange _customExchange;
         private SubscriptionCollection _subscriptions;
+        private IFactorFileProvider _factorFileProvider;
         private CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private IDataChannelProvider _channelProvider;
 
@@ -85,6 +87,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             _timeProvider = dataFeedTimeProvider.TimeProvider;
             _dataProvider = dataProvider;
             _mapFileProvider = mapFileProvider;
+            _factorFileProvider = factorFileProvider;
             _channelProvider = dataChannelProvider;
             _frontierTimeProvider = dataFeedTimeProvider.FrontierTimeProvider;
             _customExchange = new BaseDataExchange("CustomDataExchange") {SleepInterval = 10};
@@ -217,27 +220,26 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 }
                 else
                 {
-                    EventHandler handler = (sender, args) => subscription?.OnNewDataAvailable();
-                    enumerator = _dataQueueHandler.Subscribe(request.Configuration, handler);
-
-                    var securityType = request.Configuration.SecurityType;
                     var auxEnumerators = new List<IEnumerator<BaseData>>();
 
-                    if (securityType == SecurityType.Equity)
+                    if (LiveAuxiliaryDataEnumerator.TryCreate(request.Configuration, _timeProvider, _dataQueueHandler,
+                        request.Security.Cache, _mapFileProvider, _factorFileProvider, request.StartTimeLocal, out var auxDataEnumator))
+                    {
+                        auxEnumerators.Add(auxDataEnumator);
+                    }
+
+                    EventHandler handler = (_, _) => subscription?.OnNewDataAvailable();
+                    enumerator = _dataQueueHandler.Subscribe(request.Configuration, handler);
+
+                    if (request.Configuration.EmitSplitsAndDividends())
                     {
                         auxEnumerators.Add(_dataQueueHandler.Subscribe(new SubscriptionDataConfig(request.Configuration, typeof(Dividend)), handler));
                         auxEnumerators.Add(_dataQueueHandler.Subscribe(new SubscriptionDataConfig(request.Configuration, typeof(Split)), handler));
                     }
 
-                    IEnumerator<BaseData> delistingEnumerator;
-                    if (LiveDelistingEventProviderEnumerator.TryCreate(request.Configuration, _timeProvider, _dataQueueHandler, request.Security.Cache, _mapFileProvider, out delistingEnumerator))
-                    {
-                        auxEnumerators.Add(delistingEnumerator);
-                    }
-
                     if (auxEnumerators.Count > 0)
                     {
-                        enumerator = new LiveAuxiliaryDataSynchronizingEnumerator(_timeProvider, request.Configuration.ExchangeTimeZone, enumerator, auxEnumerators.ToArray());
+                        enumerator = new LiveAuxiliaryDataSynchronizingEnumerator(_timeProvider, request.Configuration.ExchangeTimeZone, enumerator, auxEnumerators);
                     }
                 }
 
@@ -300,11 +302,11 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 _customExchange.AddEnumerator(new EnumeratorHandler(config.Symbol, enumerator, enqueueable));
                 enumerator = enqueueable;
             }
-            else if (config.Type == typeof (CoarseFundamental))
+            else if (config.Type == typeof (CoarseFundamental) || config.Type == typeof (ETFConstituentData))
             {
-                Log.Trace($"LiveTradingDataFeed.CreateUniverseSubscription(): Creating coarse universe: {config.Symbol.ID}");
+                Log.Trace($"LiveTradingDataFeed.CreateUniverseSubscription(): Creating {config.Type.Name} universe: {config.Symbol.ID}");
 
-                // Will try to pull coarse data from the data folder every 10min, file with today's date.
+                // Will try to pull data from the data folder every 10min, file with yesterdays date.
                 // If lean is started today it will trigger initial coarse universe selection
                 var factory = new LiveCustomDataSubscriptionEnumeratorFactory(_timeProvider,
                     // we adjust time to the previous tradable date
@@ -320,8 +322,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 var enqueable = new EnqueueableEnumerator<BaseData>();
                 _customExchange.SetDataHandler(config.Symbol, data =>
                 {
-                    var coarseData = data as BaseDataCollection;
-                    enqueable.Enqueue(new BaseDataCollection(coarseData.Time, config.Symbol, coarseData.Data));
+                    enqueable.Enqueue(data);
                     subscription.OnNewDataAvailable();
                 });
                 enumerator = GetConfiguredFrontierAwareEnumerator(enqueable, tzOffsetProvider,

@@ -25,6 +25,7 @@ using QuantConnect.Logging;
 using QuantConnect.Orders;
 using QuantConnect.Orders.Fees;
 using QuantConnect.Securities;
+using QuantConnect.Securities.Option;
 using QuantConnect.Securities.Positions;
 using QuantConnect.Util;
 
@@ -164,6 +165,16 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
             _brokerage.OptionPositionAssigned += (sender, fill) =>
             {
                 HandlePositionAssigned(fill);
+            };
+
+            _brokerage.OptionNotification += (sender, e) =>
+            {
+                HandleOptionNotification(e);
+            };
+
+            _brokerage.DelistingNotification += (sender, e) =>
+            {
+                HandleDelistingNotification(e);
             };
 
             IsActive = true;
@@ -957,6 +968,7 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
                 else if (!_completeOrders.TryGetValue(orderEvent.OrderId, out order))
                 {
                     Log.Error("BrokerageTransactionHandler.HandleOrderEvent(): Unable to locate open Order with id " + orderEvent.OrderId);
+                    LogOrderEvent(orderEvent);
                     return;
                 }
 
@@ -967,6 +979,7 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
                 else if (!_completeOrderTickets.TryGetValue(orderEvent.OrderId, out ticket))
                 {
                     Log.Error("BrokerageTransactionHandler.HandleOrderEvent(): Unable to resolve open ticket: " + orderEvent.OrderId);
+                    LogOrderEvent(orderEvent);
                     return;
                 }
                 _cancelPendingOrders.UpdateOrRemove(order.Id, orderEvent.Status);
@@ -1098,6 +1111,20 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
                     _algorithm.SetRuntimeError(err, "Order Event Handler");
                 }
             }
+
+            LogOrderEvent(orderEvent);
+        }
+
+        /// <summary>
+        /// Debug logging helper method, called after HandleOrderEvent has finished updating status, price and quantity
+        /// </summary>
+        /// <param name="e">The order event</param>
+        private static void LogOrderEvent(OrderEvent e)
+        {
+            if (Log.DebuggingEnabled)
+            {
+                Log.Debug("BrokerageTransactionHandler.LogOrderEvent(): " + e);
+            }
         }
 
         /// <summary>
@@ -1129,6 +1156,148 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
         {
             // informing user algorithm that option position has been assigned
             _algorithm.OnAssignmentOrderEvent(fill);
+        }
+
+        private void HandleDelistingNotification(DelistingNotificationEventArgs e)
+        {
+            if (_algorithm.Securities.TryGetValue(e.Symbol, out var security))
+            {
+                Log.Trace(
+                    "BrokerageTransactionHandler.HandleDelistingNotification(): clearing position for delisted holding: " +
+                    $"Symbol: {e.Symbol.Value}, " +
+                    $"Quantity: {security.Holdings.Quantity}");
+
+                // Only submit an order if we have holdings
+                var quantity = -security.Holdings.Quantity;
+                if (quantity != 0)
+                {
+                    var tag = "Liquidate from delisting";
+
+                    // Create our order and add it
+                    var order = new MarketOrder(security.Symbol, quantity, _algorithm.UtcTime, tag);
+                    AddBrokerageOrder(order);
+
+                    // Create our fill with the latest price
+                    var fill = new OrderEvent(order, _algorithm.UtcTime, OrderFee.Zero)
+                    {
+                        FillPrice = security.Price,
+                        Status = OrderStatus.Filled,
+                        FillQuantity = order.Quantity
+                    };
+
+                    // Process this order event
+                    HandleOrderEvent(fill);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Option notification event is received and new order events are generated
+        /// </summary>
+        private void HandleOptionNotification(OptionNotificationEventArgs e)
+        {
+            if (_algorithm.Securities.TryGetValue(e.Symbol, out var security))
+            {
+                if (OptionSymbol.IsOptionContractExpired(e.Symbol, CurrentTimeUtc))
+                {
+                    if (e.Position == 0)
+                    {
+                        Log.Trace(
+                            "BrokerageTransactionHandler.HandleOptionNotification(): clearing position for expired option holding: " +
+                            $"Symbol: {e.Symbol.Value}, " +
+                            $"Quantity: {security.Holdings.Quantity}");
+
+                        var quantity = -security.Holdings.Quantity;
+
+                        // If the quantity is already 0 for Lean and the brokerage there is nothing else todo here
+                        if (quantity != 0)
+                        {
+                            var exerciseOrder = GenerateOptionExerciseOrder(security, quantity);
+
+                            EmitOptionNotificationEvents(security, exerciseOrder);
+                        }
+                    }
+                    else
+                    {
+                        Log.Error("BrokerageTransactionHandler.HandleOptionNotification(): " +
+                            $"unexpected position ({e.Position} instead of zero) " +
+                            $"for expired option contract: {e.Symbol.Value}");
+                    }
+                }
+                else
+                {
+                    // if position is reduced, could be an early exercise or early assignment
+                    if (Math.Abs(e.Position) < security.Holdings.AbsoluteQuantity)
+                    {
+                        // if we are long the option and there is an open exercise order, assume it's an early exercise
+                        if (security.Holdings.IsLong)
+                        {
+                            if (GetOpenOrders(x =>
+                                    x.Symbol == e.Symbol &&
+                                    x.Type == OrderType.OptionExercise)
+                                .FirstOrDefault() is OptionExerciseOrder exerciseOrder)
+                            {
+                                EmitOptionNotificationEvents(security, exerciseOrder);
+                            }
+                        }
+
+                        // if we are short the option and there are no buy orders, assume it's an early assignment
+                        else if (security.Holdings.IsShort)
+                        {
+                            if (!GetOpenOrders(x =>
+                                    x.Symbol == e.Symbol &&
+                                    x.Direction == OrderDirection.Buy)
+                                .Any())
+                            {
+                                var quantity = e.Position - security.Holdings.Quantity;
+
+                                var exerciseOrder = GenerateOptionExerciseOrder(security, quantity);
+
+                                EmitOptionNotificationEvents(security, exerciseOrder);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private OptionExerciseOrder GenerateOptionExerciseOrder(Security security, decimal quantity)
+        {
+            // generate new exercise order and ticket for the option
+            var order = new OptionExerciseOrder(security.Symbol, quantity, CurrentTimeUtc);
+            AddBrokerageOrder(order);
+            return order;
+        }
+
+        /// <summary>
+        /// Helper to process internally created orders for delistings/exercise orders
+        /// </summary>
+        /// <param name="order">order to </param>
+        private void AddBrokerageOrder(Order order)
+        {
+            order.Id = _algorithm.Transactions.GetIncrementOrderId();
+
+            var ticket = order.ToOrderTicket(_algorithm.Transactions);
+            AddOpenOrder(order, ticket);
+            Interlocked.Increment(ref _totalOrderCount);
+        }
+
+        private void EmitOptionNotificationEvents(Security security, OptionExerciseOrder order)
+        {
+            // generate the order events reusing the option exercise model
+            var option = (Option)security;
+            var orderEvents = option.OptionExerciseModel.OptionExercise(option, order);
+            
+            foreach (var orderEvent in orderEvents)
+            {
+                HandleOrderEvent(orderEvent);
+                
+                if (orderEvent.IsAssignment)
+                {
+                    orderEvent.Message = order.Tag;
+                    HandlePositionAssigned(orderEvent);
+                }
+            }
         }
 
         /// <summary>
